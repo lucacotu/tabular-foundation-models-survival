@@ -124,7 +124,7 @@ def legend_label(name, model):
         if "rsf" in name_lower:
             return f"{m_up} - RSF"
         if "cox" in name_lower:
-            return f"{m_up} - Cox"
+            return f"{m_up} - Cox PH"
     else:
         if "tuned deepsurv" in name_lower:
             return "Tuned DeepSurv"

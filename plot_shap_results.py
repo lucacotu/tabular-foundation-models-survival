@@ -26,6 +26,7 @@ DATASET_DISPLAY_NAMES = {
 BACKBONE_DISPLAY = {
     "tabicl": "TabICL",
     "tabpfn": "TabPFN",
+    "tabdpt": "TabDPT",
 }
 
 FOUNDATION_MODEL_KEYS = [
@@ -33,6 +34,7 @@ FOUNDATION_MODEL_KEYS = [
 ]
 BASELINE_MODEL_KEYS = [
     "deepsurv_simple_baseline", "deepsurv_vanilla_baseline", "rsf_baseline", "cox_baseline",
+    "deepsurv_tuned_baseline", "rsf_tuned_baseline",
 ]
 
 MODEL_DISPLAY = {
@@ -46,6 +48,8 @@ MODEL_DISPLAY = {
     "deepsurv_vanilla_baseline": "DeepSurv MLP\n(Baseline)",
     "rsf_baseline": "RSF (Baseline)",
     "cox_baseline": "Cox (Baseline)",
+    "deepsurv_tuned_baseline": "DeepSurv Tuned\n(Baseline)",
+    "rsf_tuned_baseline": "RSF Tuned (Baseline)",
 }
 
 # Foundation model variant colors match plot_results.py's model_color() palette
@@ -60,6 +64,8 @@ MODEL_COLOR = {
     "deepsurv_vanilla_baseline": "#fd8d3c",
     "rsf_baseline": "#31a354",
     "cox_baseline": "#74c476",
+    "deepsurv_tuned_baseline": "#fdae6b",
+    "rsf_tuned_baseline": "#a1d99b",
 }
 
 # "Preprocessing" is kept untranslated in both languages.
@@ -70,11 +76,11 @@ BAR_SUPTITLE_TEMPLATES = {
 
 HEATMAP_TITLE_TEMPLATES = {
     "en": (
-        "SHAP Feature Importance — {dataset} | TabICL + TabPFN | Preprocessing: {preprocess}\n"
+        "SHAP Feature Importance — {dataset} | TabPFN + TabDPT + TabICL | Preprocessing: {preprocess}\n"
         "Top {top_n} features per model, normalized per model"
     ),
     "it": (
-        "Importanza delle Feature SHAP — {dataset} | TabICL + TabPFN | Preprocessing: {preprocess}\n"
+        "Importanza delle Feature SHAP — {dataset} | TabPFN + TabDPT + TabICL | Preprocessing: {preprocess}\n"
         "Prime {top_n} feature per modello, normalizzate per modello"
     ),
 }
@@ -243,7 +249,7 @@ def plot_bar_charts(model_data: dict, preprocess: str, dataset: str, model: str,
 
     display_dataset = DATASET_DISPLAY_NAMES.get(dataset, dataset)
     fig.suptitle(
-        BAR_SUPTITLE_TEMPLATES[lang].format(top_n=TOP_N, dataset=display_dataset, model=model, preprocess=preprocess),
+        BAR_SUPTITLE_TEMPLATES[lang].format(top_n=TOP_N, dataset=display_dataset, model=backbone_display, preprocess=preprocess),
         fontsize=19, fontweight="bold", y=1.01,
     )
 
@@ -258,13 +264,13 @@ def plot_bar_charts(model_data: dict, preprocess: str, dataset: str, model: str,
 
 
 def plot_combined_heatmap(
-    tabicl_data: dict, tabpfn_data: dict, preprocess: str, dataset: str, out_dir: Path, lang: str = "en"
+    tabicl_data: dict, tabpfn_data: dict, tabdpt_data: dict, preprocess: str, dataset: str, out_dir: Path, lang: str = "en"
 ) -> None:
-    """Heatmap merging TabICL and TabPFN foundation-model columns, sharing one baseline group."""
+    """Heatmap merging TabICL, TabPFN and TabDPT foundation-model columns, sharing one baseline group."""
     merged_model_data: dict = {}
     xtick_labels: list = []
 
-    for src_prefix, src_data in (("TabICL", tabicl_data), ("TabPFN", tabpfn_data)):
+    for src_prefix, src_data in (("TabPFN", tabpfn_data), ("TabDPT", tabdpt_data), ("TabICL", tabicl_data)):
         for key in FOUNDATION_MODEL_KEYS:
             if key not in src_data:
                 continue
@@ -272,11 +278,11 @@ def plot_combined_heatmap(
             merged_model_data[merged_key] = src_data[key]
             xtick_labels.append(f"{src_prefix} - {MODEL_DISPLAY.get(key, key)}")
 
-    # Baselines don't depend on the embedding model, so TabPFN's copy is used for both.
+    # Baselines don't depend on the embedding model, so TabDPT's copy is used for all three.
     for key in BASELINE_MODEL_KEYS:
-        if key not in tabpfn_data:
+        if key not in tabdpt_data:
             continue
-        merged_model_data[key] = tabpfn_data[key]
+        merged_model_data[key] = tabdpt_data[key]
         xtick_labels.append(MODEL_DISPLAY.get(key, key))
 
     display_dataset = DATASET_DISPLAY_NAMES.get(dataset, dataset)
@@ -284,6 +290,15 @@ def plot_combined_heatmap(
     suffix = "" if lang == "en" else "_ita"
     stem = f"shap_{dataset}_combined_heatmap_preprocess{preprocess}{suffix}"
     plot_heatmap(merged_model_data, list(merged_model_data.keys()), xtick_labels, title, stem, out_dir)
+
+
+def apply_tabdpt_baselines(model_data: dict, tabdpt_preprocess_data: dict) -> dict:
+    """Replace baseline-model entries with TabDPT's values, since baselines don't depend on the embedding backbone."""
+    merged = dict(model_data)
+    for key in BASELINE_MODEL_KEYS:
+        if key in tabdpt_preprocess_data:
+            merged[key] = tabdpt_preprocess_data[key]
+    return merged
 
 
 def main() -> None:
@@ -310,26 +325,31 @@ def main() -> None:
         all_data = parse_aggregated(filepath)
         dataset_data.setdefault(dataset_name, {})[model_name] = all_data
 
-        out_dir = results_dir / dataset_name / model_name / "aggregated"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for preprocess, model_data in all_data.items():
-            print(f"  Preprocessing: {preprocess}  ({len(model_data)} models)")
-            for lang in ("en", "it"):
-                plot_bar_charts(model_data, preprocess, dataset_name, model_name, out_dir, lang=lang)
+    for dataset_name, per_model in dataset_data.items():
+        tabdpt_data = per_model.get("tabdpt", {})
+        for model_name, all_data in per_model.items():
+            out_dir = results_dir / dataset_name / model_name / "aggregated"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for preprocess, model_data in all_data.items():
+                merged_data = apply_tabdpt_baselines(model_data, tabdpt_data.get(preprocess, {}))
+                print(f"  Preprocessing: {preprocess}  ({len(merged_data)} models)")
+                for lang in ("en", "it"):
+                    plot_bar_charts(merged_data, preprocess, dataset_name, model_name, out_dir, lang=lang)
 
     for dataset_name, per_model in dataset_data.items():
-        if "tabicl" not in per_model or "tabpfn" not in per_model:
-            print(f"\nSkipping combined heatmap for {dataset_name}: need both tabicl and tabpfn")
+        if "tabicl" not in per_model or "tabpfn" not in per_model or "tabdpt" not in per_model:
+            print(f"\nSkipping combined heatmap for {dataset_name}: need tabicl, tabpfn and tabdpt")
             continue
         print(f"\nBuilding combined heatmap: {dataset_name}")
         out_dir = results_dir / dataset_name / "aggregated"
         out_dir.mkdir(parents=True, exist_ok=True)
-        preprocesses = sorted(set(per_model["tabicl"]) | set(per_model["tabpfn"]))
+        preprocesses = sorted(set(per_model["tabicl"]) | set(per_model["tabpfn"]) | set(per_model["tabdpt"]))
         for preprocess in preprocesses:
             for lang in ("en", "it"):
                 plot_combined_heatmap(
                     per_model["tabicl"].get(preprocess, {}),
                     per_model["tabpfn"].get(preprocess, {}),
+                    per_model["tabdpt"].get(preprocess, {}),
                     preprocess, dataset_name, out_dir, lang=lang,
                 )
 
